@@ -4,9 +4,13 @@
 // ends (2.54 mm housings) drop into square tubes in the frame and plug into
 // D2, D4 and GND on the Arduino's female headers. Two 3.5 mm threaded-bushing
 // jacks mount through the top face, hanging out past the board edge so the LED
-// matrix stays visible. The Arduino lives in a case whose top plate the header
-// pokes ~2 mm through; the frame sits flat on that plate with a recess that
-// fits around both header strips, which locates it in X and Y.
+// matrix stays visible. The Arduino lives in a stacked-plate case whose top
+// plate the header pokes ~2 mm through; the frame sits flat on that plate with
+// a recess that fits around the header housing, which locates it in X and Y.
+// The layer under the top plate is set back ~0.7 mm, leaving an undercut. Two
+// fingers hook that undercut: a rigid one at the D0 end and a flexible one on
+// the header side at the notch between D13 and D12. Fit by hooking the end
+// first, then tilting down until the side finger clicks in.
 //
 // Wiring:  D2 -> CLK tip,  D4 -> RUN tip,  GND -> both sleeves
 //
@@ -51,11 +55,28 @@ jack_spacing     = 15.0;
 jack_x0          = 8.0;
 jack_y           = -8.0;      // negative = off the board edge
 
+// ---- Case hooks ----
+fingers        = true;
+plate_t        = 3.0;         // case top plate thickness
+undercut       = 0.7;         // set-back of the layer under the top plate
+end_setback    = 2.5;         // header housing end (D0 side) -> plate edge
+side_setback   = 2.0;         // header housing outer face -> plate edge
+hook_h         = 1.2;         // hook thickness under the plate
+hook_reach     = undercut - 0.1;
+end_finger_t   = 2.0;         // rigid
+end_finger_w   = 6.0;
+side_finger_t  = 1.2;         // flexes to snap in
+side_finger_w  = 5.0;
+side_finger_x  = d8_x + 5 * pitch + pitch/2;   // midway between D13 and D12
+hdr_end_x      = d0_x - hdr_w/2;               // D0 end of the header housing
+hdr_face_y     = row_y - hdr_w/2;              // outer face of the header housing
+hook_chamfer   = 0.6;
+
 // ---- Frame ----
 wall     = 2.0;
 floor_t  = 3.0;
 top_t    = 2.5;
-x_min    = -1.5;
+x_min    = hdr_end_x - end_setback - end_finger_t - 0.5;
 x_max    = 46.0;              // stops short of the case screw at the SCL end
                               // (hole centre ~50.6, head edge ~47.8); header
                               // runs out through an open-ended slot
@@ -99,6 +120,35 @@ module header_recess() {
         cube([len, w, hdr_above + 0.2 + 0.01]);
 }
 
+// Rigid hook over the D0 end of the case top plate
+module end_finger() {
+    x_face = hdr_end_x - end_setback;            // plate end face
+    drop   = plate_t + hook_h;
+    translate([x_face - end_finger_t, row_y - end_finger_w/2, -drop])
+        cube([end_finger_t, end_finger_w, drop + floor_t]);
+    translate([x_face - 0.01, row_y - end_finger_w/2, -drop])
+        cube([hook_reach + 0.01, end_finger_w, hook_h]);
+}
+
+// Flexible finger down the header-side face, hooking the notch under D13/D12
+module side_finger() {
+    y_face = hdr_face_y - side_setback;          // plate side face
+    drop   = plate_t + hook_h;
+    // finger, joined to the floor strip above
+    translate([side_finger_x - side_finger_w/2, y_face - side_finger_t, -drop])
+        cube([side_finger_w, side_finger_t, drop + floor_t]);
+    // bridge from finger back to the floor (cavity is open-bottomed here)
+    translate([side_finger_x - side_finger_w/2, y_face - side_finger_t, 0])
+        cube([side_finger_w, -y_face + side_finger_t + 0.5, floor_t]);
+    // hook with a lead-in chamfer so it slides over the plate edge
+    hull() {
+        translate([side_finger_x - side_finger_w/2, y_face - 0.01, -plate_t - hook_h])
+            cube([side_finger_w, 0.01, hook_h]);
+        translate([side_finger_x - side_finger_w/2, y_face - 0.01, -plate_t - hook_h])
+            cube([side_finger_w, hook_reach + 0.01, hook_h - hook_chamfer]);
+    }
+}
+
 module frame() {
     difference() {
         union() {
@@ -113,6 +163,7 @@ module frame() {
                     cube([x_max - x_min - 2*wall, -y_min - wall - 0.5, floor_t + 0.02]);
             }
             for (x = pin_x) dupont_tube_solid(x);
+            if (fingers) { end_finger(); side_finger(); }
         }
         for (x = pin_x) dupont_tube_cut(x);
         header_recess();
