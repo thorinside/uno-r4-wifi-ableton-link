@@ -17,14 +17,18 @@
 
 $fn = 64;
 
-// ---- Arduino geometry (from KiCad Arduino_UNO_R3 footprint) ----
+// ---- Arduino geometry ----
+// Cross-checked against the UNO R4 WiFi datasheet (ABX00087, rev 8) mechanical
+// drawing: board 68.58 x 53.34, header row 2.54 from the edge, D0 2.54 from the
+// corner, one continuous 19-position housing (18 pins + blank between D7/D8),
+// female headers 8.5 mm tall. Pin centres from the KiCad Arduino_UNO_R3 footprint.
 pitch         = 2.54;
 row_y         = 2.54;         // header row centre, from board edge (Y = 0)
 d0_x          = 2.54;
 d8_x          = 24.38;        // 0.16" gap after D7
 hdr_w         = 2.54;         // female header body width
 hdr_above     = 2.0;          // header protrusion above the case plate
-hdr_allow     = 0.15;         // per side, recess around the header strips
+hdr_allow     = 0.20;         // per side, recess around the header housing
 
 pin_x = [ d0_x + 2*pitch,     // D2
           d0_x + 4*pitch,     // D4
