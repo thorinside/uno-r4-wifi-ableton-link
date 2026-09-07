@@ -4,13 +4,15 @@
 // ends (2.54 mm housings) drop into square tubes in the frame and plug into
 // D2, D4 and GND on the Arduino's female headers. Two 3.5 mm threaded-bushing
 // jacks mount through the top face, hanging out past the board edge so the LED
-// matrix stays visible. Two clip fingers snap over the board edge for retention.
+// matrix stays visible. The Arduino lives in a case whose top plate the header
+// pokes ~2 mm through; the frame sits flat on that plate with a recess that
+// fits around both header strips, which locates it in X and Y.
 //
 // Wiring:  D2 -> CLK tip,  D4 -> RUN tip,  GND -> both sleeves
 //
 // Coordinates: origin at the D0 corner of the board edge, X runs along the
 // header toward the USB port, Y positive goes inward over the board,
-// Z = 0 is the top surface of the Arduino's female headers.
+// Z = 0 is the top surface of the case plate the frame rests on.
 // Print upside down (top face on the build plate).
 
 $fn = 64;
@@ -20,8 +22,9 @@ pitch         = 2.54;
 row_y         = 2.54;         // header row centre, from board edge (Y = 0)
 d0_x          = 2.54;
 d8_x          = 24.38;        // 0.16" gap after D7
-fem_hdr_h     = 8.5;          // female header height above board
-board_t       = 1.6;
+hdr_w         = 2.54;         // female header body width
+hdr_above     = 2.0;          // header protrusion above the case plate
+hdr_allow     = 0.15;         // per side, recess around the header strips
 
 pin_x = [ d0_x + 2*pitch,     // D2
           d0_x + 4*pitch,     // D4
@@ -49,19 +52,12 @@ wall     = 2.0;
 floor_t  = 3.0;
 top_t    = 2.5;
 x_min    = -1.5;
-x_max    = 43.5;              // just past GND (39.62)
+x_max    = 50.5;              // past the end of the 10-pin strip (SCL 47.24)
 y_min    = -16.0;             // overhang past board edge
 y_max    = 5.5;
-inner_h  = max(dup_len + wire_bend, jack_body_len + jack_pin_len + 1);
+dup_top  = hdr_above + dup_len;                 // housing sits on the header top
+inner_h  = max(dup_top + wire_bend - floor_t, jack_body_len + jack_pin_len + 1);
 H        = floor_t + inner_h + top_t;
-
-// ---- Edge clips ----
-edge_clips  = true;
-clip_w      = 6.0;
-clip_t      = 1.5;            // finger thickness (Y)
-clip_hook   = 0.8;            // how far the hook reaches under the board
-clip_hook_h = 1.5;
-clip_x      = [ 4.0, 33.0 ];  // finger centres, chosen to miss the jacks
 
 label_depth = 0.4;
 labels      = ["CLK", "RUN"];
@@ -76,21 +72,20 @@ module dupont_tube_solid(x) {
 module dupont_tube_cut(x) {
     // housing bore: floor bottom up to the stop
     translate([x - tube_i/2, row_y - tube_i/2, -0.01])
-        cube([tube_i, tube_i, dup_len + 0.01]);
+        cube([tube_i, tube_i, dup_top + 0.01]);
     // wire exit: slot from the top of the housing out the -Y face (toward jacks)
-    translate([x - wire_slot_w/2, row_y - tube_o/2 - 0.01, dup_len - 0.01])
+    translate([x - wire_slot_w/2, row_y - tube_o/2 - 0.01, dup_top - 0.01])
         cube([wire_slot_w, tube_o/2, wire_bend + 0.02]);
-    translate([x - wire_slot_w/2, row_y - wire_slot_w/2, dup_len - 0.01])
+    translate([x - wire_slot_w/2, row_y - wire_slot_w/2, dup_top - 0.01])
         cube([wire_slot_w, wire_slot_w, wire_bend + 0.02]);
 }
 
-module clip(x) {
-    // finger hangs outside the board edge and hooks under it
-    drop = fem_hdr_h + board_t + clip_hook_h;
-    translate([x - clip_w/2, -clip_t, -drop])
-        cube([clip_w, clip_t, drop + 0.01]);
-    translate([x - clip_w/2, -0.01, -drop])
-        cube([clip_w, clip_hook + 0.01, clip_hook_h]);
+// Recess in the underside that fits around a header strip (n pins from x0)
+module header_recess(x0, n) {
+    len = (n - 1) * pitch + hdr_w + 2 * hdr_allow;
+    w   = hdr_w + 2 * hdr_allow;
+    translate([x0 - hdr_w/2 - hdr_allow, row_y - w/2, -0.01])
+        cube([len, w, hdr_above + 0.2 + 0.01]);
 }
 
 module frame() {
@@ -107,9 +102,10 @@ module frame() {
                     cube([x_max - x_min - 2*wall, -y_min - wall - 0.5, floor_t + 0.02]);
             }
             for (x = pin_x) dupont_tube_solid(x);
-            if (edge_clips) for (x = clip_x) clip(x);
         }
         for (x = pin_x) dupont_tube_cut(x);
+        header_recess(d0_x, 8);
+        header_recess(d8_x, 10);
 
         for (j = [0 : len(labels) - 1]) {
             jx = jack_x0 + j * jack_spacing;
