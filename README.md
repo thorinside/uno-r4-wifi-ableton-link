@@ -107,7 +107,18 @@ link_clock/link_clock.ino   # All firmware code
 Makefile                     # Build/upload targets
 test/test_link_clock.cpp     # Unit tests
 test/Makefile                # Test build
+hardware/link_clock_shield.scad  # Snap-on CLK/RUN jack shield (OpenSCAD, parametric)
+hardware/link_clock_shield.stl   # Same, ready to slice
 ```
+
+## Jack Shield
+
+`hardware/` holds a resin-printable shield that clips onto the digital header
+edge of the UNO R4 WiFi in its stacked-plate case. Three male Dupont jumper ends
+drop into tubes at D2, D4 and GND; two threaded-bushing 3.5 mm jacks mount
+through the top face. Every dimension is a variable at the top of the SCAD file.
+Print a test slice with one tube, a bit of header slot and the D0-end hook before
+committing to the full part.
 
 ## License
 
