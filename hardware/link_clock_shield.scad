@@ -56,7 +56,9 @@ wall     = 2.0;
 floor_t  = 3.0;
 top_t    = 2.5;
 x_min    = -1.5;
-x_max    = 50.5;              // past the end of the 10-pin strip (SCL 47.24)
+x_max    = 46.0;              // stops short of the case screw at the SCL end
+                              // (hole centre ~50.6, head edge ~47.8); header
+                              // runs out through an open-ended slot
 y_min    = -16.0;             // overhang past board edge
 y_max    = 5.5;
 dup_top  = hdr_above + dup_len;                 // housing sits on the header top
@@ -86,10 +88,11 @@ module dupont_tube_cut(x) {
 
 // Recess in the underside that fits around the digital header. On the UNO R4
 // WiFi the plastic is one continuous strip from D0 to SCL (the 0.16" gap between
-// D7 and D8 is a blank position, not a break), so this is a single slot.
+// D7 and D8 is a blank position, not a break), so this is a single slot. It is
+// open at the SCL end because the frame stops short of the case screw there.
 module header_recess() {
     x_first = d0_x;
-    x_last  = d8_x + 9 * pitch;                  // SCL
+    x_last  = x_max + 1;                         // open-ended past the frame
     len = (x_last - x_first) + hdr_w + 2 * hdr_allow;
     w   = hdr_w + 2 * hdr_allow;
     translate([x_first - hdr_w/2 - hdr_allow, row_y - w/2, -0.01])
