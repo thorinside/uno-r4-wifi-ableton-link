@@ -57,7 +57,7 @@ jack_y           = -8.0;      // negative = off the board edge
 
 // ---- Case hooks ----
 fingers        = true;
-plate_t        = 6.0;         // two stacked 3 mm plates above the undercut
+plate_t        = 7.0;         // two stacked 3.5 mm plates above the undercut
 undercut       = 0.7;         // set-back of the layer under the top plate
 end_setback    = 2.5;         // header housing end (D0 side) -> plate edge
 side_setback   = 2.0;         // header housing outer face -> plate edge
