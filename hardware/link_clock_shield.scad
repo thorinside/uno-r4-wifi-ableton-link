@@ -80,11 +80,15 @@ module dupont_tube_cut(x) {
         cube([wire_slot_w, wire_slot_w, wire_bend + 0.02]);
 }
 
-// Recess in the underside that fits around a header strip (n pins from x0)
-module header_recess(x0, n) {
-    len = (n - 1) * pitch + hdr_w + 2 * hdr_allow;
+// Recess in the underside that fits around the digital header. On the UNO R4
+// WiFi the plastic is one continuous strip from D0 to SCL (the 0.16" gap between
+// D7 and D8 is a blank position, not a break), so this is a single slot.
+module header_recess() {
+    x_first = d0_x;
+    x_last  = d8_x + 9 * pitch;                  // SCL
+    len = (x_last - x_first) + hdr_w + 2 * hdr_allow;
     w   = hdr_w + 2 * hdr_allow;
-    translate([x0 - hdr_w/2 - hdr_allow, row_y - w/2, -0.01])
+    translate([x_first - hdr_w/2 - hdr_allow, row_y - w/2, -0.01])
         cube([len, w, hdr_above + 0.2 + 0.01]);
 }
 
@@ -104,8 +108,7 @@ module frame() {
             for (x = pin_x) dupont_tube_solid(x);
         }
         for (x = pin_x) dupont_tube_cut(x);
-        header_recess(d0_x, 8);
-        header_recess(d8_x, 10);
+        header_recess();
 
         for (j = [0 : len(labels) - 1]) {
             jx = jack_x0 + j * jack_spacing;
