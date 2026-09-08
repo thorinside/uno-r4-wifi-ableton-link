@@ -57,9 +57,8 @@ jack_y           = -8.0;      // negative = off the board edge
 
 // ---- Case hooks ----
 fingers        = true;
-// Drop from the case top to the undercut, per finger. First print used 7.0 for
-// both: the end hook sat ~0.5 mm low, the side hook ~0.5 mm high.
-end_drop       = 6.5;
+// Drop from the case top to the undercut. First print at 7.0 was ~0.5 mm short.
+end_drop       = 7.5;
 side_drop      = 7.5;
 undercut       = 0.7;         // set-back of the layer under the top plate
 end_setback    = 2.5;         // header housing end (D0 side) -> plate edge
