@@ -57,7 +57,10 @@ jack_y           = -8.0;      // negative = off the board edge
 
 // ---- Case hooks ----
 fingers        = true;
-plate_t        = 7.0;         // two stacked 3.5 mm plates above the undercut
+// Drop from the case top to the undercut, per finger. First print used 7.0 for
+// both: the end hook sat ~0.5 mm low, the side hook ~0.5 mm high.
+end_drop       = 6.5;
+side_drop      = 7.5;
 undercut       = 0.7;         // set-back of the layer under the top plate
 end_setback    = 2.5;         // header housing end (D0 side) -> plate edge
 side_setback   = 2.0;         // header housing outer face -> plate edge
@@ -67,7 +70,7 @@ end_finger_t   = 2.0;         // rigid
 end_finger_w   = 6.0;
 side_finger_t  = 1.2;         // flexes to snap in
 side_finger_w  = 3.2;         // notch is ~4 mm wide; leave ~0.4 mm a side
-side_finger_x  = d8_x + 4.5 * pitch;           // midway between D12 (d8+4) and D13 (d8+5)
+side_finger_x  = d8_x + 4.5 * pitch + 1.0;     // notch between D12/D13; first print was ~1 mm short of it
 hdr_end_x      = d0_x - hdr_w/2;               // D0 end of the header housing
 hdr_face_y     = row_y - hdr_w/2;              // outer face of the header housing
 hook_chamfer   = 0.6;
@@ -123,7 +126,7 @@ module header_recess() {
 // Rigid hook over the D0 end of the case top plate
 module end_finger() {
     x_face = hdr_end_x - end_setback;            // plate end face
-    drop   = plate_t + hook_h;
+    drop   = end_drop + hook_h;
     translate([x_face - end_finger_t, row_y - end_finger_w/2, -drop])
         cube([end_finger_t, end_finger_w, drop + floor_t]);
     translate([x_face - 0.01, row_y - end_finger_w/2, -drop])
@@ -133,7 +136,7 @@ module end_finger() {
 // Flexible finger down the header-side face, hooking the notch under D13/D12
 module side_finger() {
     y_face = hdr_face_y - side_setback;          // plate side face
-    drop   = plate_t + hook_h;
+    drop   = side_drop + hook_h;
     // finger, joined to the floor strip above
     translate([side_finger_x - side_finger_w/2, y_face - side_finger_t, -drop])
         cube([side_finger_w, side_finger_t, drop + floor_t]);
@@ -142,9 +145,9 @@ module side_finger() {
         cube([side_finger_w, -y_face + side_finger_t + 0.5, floor_t]);
     // hook with a lead-in chamfer so it slides over the plate edge
     hull() {
-        translate([side_finger_x - side_finger_w/2, y_face - 0.01, -plate_t - hook_h])
+        translate([side_finger_x - side_finger_w/2, y_face - 0.01, -side_drop - hook_h])
             cube([side_finger_w, 0.01, hook_h]);
-        translate([side_finger_x - side_finger_w/2, y_face - 0.01, -plate_t - hook_h])
+        translate([side_finger_x - side_finger_w/2, y_face - 0.01, -side_drop - hook_h])
             cube([side_finger_w, hook_reach + 0.01, hook_h - hook_chamfer]);
     }
 }
