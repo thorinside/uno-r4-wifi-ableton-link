@@ -43,7 +43,7 @@ dup_body      = 2.54;         // housing cross-section
 dup_len       = 14.0;         // housing length
 dup_allow     = 0.10;         // per side; tune so the housing is a snug push fit
 dup_wall      = 1.2;          // tube wall
-wire_slot_w   = 1.8;
+wire_slot_w   = 2.2;          // first print at 1.8 was tight to thread the wire
 wire_bend     = 3.0;          // room above the housing for the wire to turn
 
 // ---- Jack (measured: body h10 x l9 x d8, M6 bushing) ----
@@ -57,11 +57,14 @@ jack_y           = -8.0;      // negative = off the board edge
 
 // ---- Case hooks ----
 fingers        = true;
-// Drop from the case top to the undercut. First print at 7.0 was ~0.5 mm short.
-end_drop       = 7.5;
-side_drop      = 7.5;
+// Drop from the case top to the undercut. First print at 7.0 was short; a hook
+// that is a little long still catches the plate, a short one does not.
+end_drop       = 8.0;
+side_drop      = 8.0;
 undercut       = 0.7;         // set-back of the layer under the top plate
-end_setback    = 2.5;         // header housing end (D0 side) -> plate edge
+// First print (2.5) stopped the frame 1.5 mm short of the pins with the finger
+// against the plate; with the fingers removed the tubes and recess fit exactly.
+end_setback    = 4.0;         // header housing end (D0 side) -> plate edge
 side_setback   = 2.0;         // header housing outer face -> plate edge
 hook_h         = 1.2;         // hook thickness under the plate
 hook_reach     = undercut + 0.2;   // first print at 0.6 only caught the plate corner
@@ -69,7 +72,9 @@ end_finger_t   = 2.0;         // rigid
 end_finger_w   = 6.0;
 side_finger_t  = 1.2;         // flexes to snap in
 side_finger_w  = 3.2;         // notch is ~4 mm wide; leave ~0.4 mm a side
-side_finger_x  = d8_x + 4.5 * pitch + 1.0;     // notch between D12/D13; first print was ~1 mm short of it
+// Notch between D12/D13. First print looked ~1 mm toward D0 of the notch, but
+// the frame itself sat 1.5 mm toward D0 (see end_setback), so net -0.5.
+side_finger_x  = d8_x + 4.5 * pitch - 0.5;
 hdr_end_x      = d0_x - hdr_w/2;               // D0 end of the header housing
 hdr_face_y     = row_y - hdr_w/2;              // outer face of the header housing
 hook_chamfer   = 0.6;
