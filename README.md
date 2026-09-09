@@ -8,7 +8,7 @@ Firmware that turns an Arduino UNO R4 WiFi into a 48 PPQN Eurorack clock generat
 - **Follow-only** Link client — reads tempo/phase, never influences the session
 - **LED matrix BPM display** — 3-digit readout with beat flash (50ms full white)
 - **Phase-aligned tempo changes** using Link beat anchor
-- **Selectable PPQN** via potentiometer on A0 (1, 2, 4, 8, 12, 24, 48)
+- **Fixed 48 PPQN** by default; set `PPQN_POT` to 1 in the sketch for a selector pot on A0 (1, 2, 4, 8, 12, 24, 48)
 - **RUN gate** on D4 — HIGH when Link transport is playing
 - **Automatic fallback** to 120 BPM before Link connection
 - **Disconnect indicator** — walking dot on bottom LED row when no Link peer
@@ -19,7 +19,7 @@ Firmware that turns an Arduino UNO R4 WiFi into a 48 PPQN Eurorack clock generat
 |---|---|---|
 | Clock output | D2 | 5V logic; use a level shifter for Eurorack |
 | RUN gate | D4 | HIGH when Link transport is playing |
-| PPQN select | A0 | Potentiometer, CCW=1 PPQN, CW=48 PPQN |
+| PPQN select | A0 | Optional potentiometer (only read when `PPQN_POT` is 1), CCW=1 PPQN, CW=48 PPQN |
 | LED matrix | Built-in 12x8 | BPM display + beat feedback |
 | WiFi | Built-in ESP32-S3 | Joins your local network |
 
@@ -61,7 +61,7 @@ The device listens on UDP multicast `224.76.78.75:20808` for Ableton Link timeli
 
 | Parameter | Value |
 |---|---|
-| PPQN | 1-48 (selectable via A0) |
+| PPQN | 48 fixed (1-48 via A0 pot when `PPQN_POT` is 1) |
 | Pulse width | 2ms HIGH |
 | Frequency at 120 BPM, 48 PPQN | 96 Hz |
 | Frequency formula | `f = (BPM / 60) * PPQN` |

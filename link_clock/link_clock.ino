@@ -4,7 +4,7 @@
 
   Follow-only Link client: reads tempo/phase from Link session via UDP
   multicast, outputs configurable PPQN clock on D2 with 2ms pulse width.
-  PPQN is selected via a pot on A0 (CCW=1, CW=48).
+  PPQN is fixed at 48 (PPQN_FIXED); set PPQN_POT to 1 to select it with a pot on A0.
   Advertises presence (peer count) but never sends timeline data.
 
   Clock pulses are derived directly from the Link timeline each loop
@@ -22,7 +22,11 @@ const char* WIFI_PASS = "YOUR_PASSWORD";
 
 #define CLOCK_PIN        2
 #define RUN_PIN          4
-// PPQN options selectable via A0 pot (CCW=1, CW=48)
+// PPQN selection. With PPQN_POT set to 1 a pot on A0 picks from PPQN_OPTIONS
+// (CCW=1, CW=48). With no pot fitted A0 floats and lands on random settings
+// (usually 2 PPQN), so leave PPQN_POT at 0 to lock the output to PPQN_FIXED.
+#define PPQN_POT         0
+#define PPQN_FIXED       48
 static const int PPQN_OPTIONS[] = { 1, 2, 4, 8, 12, 24, 48 };
 static const int PPQN_COUNT = sizeof(PPQN_OPTIONS) / sizeof(PPQN_OPTIONS[0]);
 #define DEFAULT_BPM      120.0f
@@ -52,8 +56,8 @@ float    g_bpm           = DEFAULT_BPM;
 int64_t  g_tempo_us      = 500000LL;
 bool     g_tempo_changed = false;
 
-// PPQN (configurable via A0)
-int g_ppqn       = 48;
+// PPQN (fixed, or configurable via A0 when PPQN_POT is 1)
+int g_ppqn       = PPQN_FIXED;
 int g_ppqn_index = PPQN_COUNT - 1;
 
 // Link session
@@ -633,6 +637,7 @@ void loop() {
   }
 
   // ── 5. PPQN from A0 pot ──
+#if PPQN_POT
   static unsigned long s_ppqn_check_ms = 0;
   static int s_ppqn_candidate = -1;
   static int s_ppqn_confirm = 0;
@@ -658,6 +663,7 @@ void loop() {
       Serial.println(g_ppqn);
     }
   }
+#endif
 
   // ── 6. UDP receive ──
   int pktSize = g_udp.parsePacket();
