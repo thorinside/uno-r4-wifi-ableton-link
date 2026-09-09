@@ -2,7 +2,7 @@
 IDE_ACLI := /Applications/Arduino\ IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli
 ACLI   ?= $(if $(shell command -v arduino-cli 2>/dev/null),arduino-cli,$(IDE_ACLI))
 FQBN   := arduino:renesas_uno:unor4wifi
-PORT   ?= /dev/cu.usbmodem*
+PORT   ?= $(firstword $(wildcard /dev/cu.usbmodem*))
 SKETCH := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))link_clock
 
 .PHONY: compile upload deploy monitor
