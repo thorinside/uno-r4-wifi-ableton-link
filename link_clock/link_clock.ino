@@ -102,7 +102,13 @@ IPAddress     g_mep_ip;
 uint16_t      g_mep_port        = 0;
 bool          g_mep_valid       = false;
 WiFiUDP       g_measure_udp;
-int64_t       g_host_to_ghost   = 0;  // ghost = host + this (microseconds)
+// Ghost clock model: ghost = host + g_host_to_ghost + (host - g_ghost_h0) * g_ghost_rate.
+// The rate term absorbs the RA4M1's internal-oscillator error (a few hundred
+// ppm) so the scheduler runs at the right frequency instead of being dragged
+// back into phase every ping, which read as brief tempo dips.
+int64_t       g_host_to_ghost   = 0;  // offset at host time g_ghost_h0 (microseconds)
+int64_t       g_ghost_h0        = 0;
+double        g_ghost_rate      = 0.0;  // d(ghost)/d(host) - 1
 bool          g_ghost_valid     = false;
 int64_t       g_ping_host_time  = 0;  // host time when last ping sent
 unsigned long g_last_ping_ms    = 0;
@@ -168,6 +174,7 @@ void drawDigit(int digit, int col0, int row0) {
 #define SCHED_HZ         20000UL
 #define SCHED_TICK_US    (1000000UL / SCHED_HZ)
 #define SNAP_US          3000      // phase error above this snaps instead of slewing
+#define SLEW_MAX_US      20        // per loop pass; bounds tempo deviation while slewing
 
 static FspTimer          s_sched;
 static volatile uint32_t s_tick         = 0;
@@ -180,6 +187,16 @@ static volatile int      s_qlen         = 4 * 48;  // pulses per quantum
 static volatile int      s_next_idx     = 0;      // index the next pulse will carry
 static volatile int      s_pulse_idx    = 0;      // index of the last pulse fired
 static volatile uint32_t s_pulse_count  = 0;
+
+int64_t hostToGhost(int64_t host) {
+  return host + g_host_to_ghost
+       + (int64_t)((double)(host - g_ghost_h0) * g_ghost_rate);
+}
+
+// One Live microsecond takes 1/(1+rate) host microseconds
+static inline double ghostToHostScale() {
+  return (g_ghost_valid) ? 1.0 / (1.0 + g_ghost_rate) : 1.0;
+}
 
 static inline int64_t us_to_q(int64_t us) {
   return (us * (int64_t)SCHED_HZ * 65536LL) / 1000000LL;
@@ -219,21 +236,29 @@ void schedulerBegin() {
   s_sched.start();
 }
 
+// Pulse period in host (timer) time, corrected for the oscillator rate error.
+void schedulerSetPeriod() {
+  double period_host_us = (double)g_tempo_us / g_ppqn * ghostToHostScale();
+  int64_t period_q = (int64_t)(period_host_us * SCHED_HZ / 1000000.0 * 65536.0 + 0.5);
+  noInterrupts();
+  s_period_q = period_q;
+  interrupts();
+}
+
 // Push tempo, PPQN and pulse width into the scheduler.
 void updatePulseWidth() {
   float freq_hz = (g_bpm / 60.0f) * g_ppqn;
   float max_pulse_us = 400000.0f / freq_hz;  // 40% duty cap
   g_pulse_width_us = (max_pulse_us < 2000.0f) ? (unsigned long)max_pulse_us : 2000UL;
 
-  int64_t  period_q = us_to_q(g_tempo_us / g_ppqn);
-  uint32_t width    = g_pulse_width_us / SCHED_TICK_US;
-  int      qlen     = 4 * g_ppqn;
+  uint32_t width = g_pulse_width_us / SCHED_TICK_US;
+  int      qlen  = 4 * g_ppqn;
   noInterrupts();
-  s_period_q    = period_q;
   s_width_ticks = width ? width : 1;
   s_qlen        = qlen;
   s_next_idx   %= qlen;
   interrupts();
+  schedulerSetPeriod();
 }
 
 // ─── Timeline → Pulse Position ──────────────────────────
@@ -249,7 +274,7 @@ int64_t computeTimelinePhase() {
 
   if (g_ghost_valid) {
     // Measurement-based: ghost = host + offset (drift-free)
-    int64_t ghost_now = (int64_t)micros64() + g_host_to_ghost;
+    int64_t ghost_now = hostToGhost((int64_t)micros64());
     elapsed = ghost_now - g_tl_time_origin;
     beat_origin_ub = g_tl_beat_origin;
   } else if (g_clock_calibrated) {
@@ -297,10 +322,12 @@ void syncScheduler() {
   int     ppqn     = g_ppqn;
   int     qlen     = 4 * ppqn;
   int64_t phase_p  = computeTimelinePhase();
-  int64_t period_us = g_tempo_us / ppqn;
+  double  scale    = ghostToHostScale();
+  int64_t period_us = (int64_t)((double)g_tempo_us / ppqn * scale);
   int     tl_idx   = (int)(phase_p / 1000000LL);                 // pulse we are in
   int64_t frac_p   = phase_p % 1000000LL;
-  int64_t tl_next_us = (1000000LL - frac_p) * g_tempo_us / (1000000LL * ppqn);
+  int64_t tl_next_us = (int64_t)((double)(1000000LL - frac_p) * g_tempo_us
+                                 / (1000000.0 * ppqn) * scale);
 
   noInterrupts();
   uint32_t t   = s_tick;
@@ -320,6 +347,8 @@ void syncScheduler() {
     g_force_snap = false;
   } else {
     step = err / 8;
+    if (step >  SLEW_MAX_US) step =  SLEW_MAX_US;
+    if (step < -SLEW_MAX_US) step = -SLEW_MAX_US;
   }
 
   noInterrupts();
@@ -622,14 +651,31 @@ void handleMeasurementPong(const uint8_t* buf, int len) {
 
     if (!g_ghost_valid) {
       g_host_to_ghost = sample;
-      g_ghost_valid = true;
-      g_force_snap = true;  // re-derive pulse phase from measurement
+      g_ghost_h0      = host_mid;   // keep any learned rate: it is our oscillator's, not the peer's
+      g_ghost_valid   = true;
+      g_force_snap    = true;  // re-derive pulse phase from measurement
       Serial.print("GHOST: initial off=");
       Serial.print((long)(sample / 1000));
       Serial.println("ms");
     } else {
-      // EMA with alpha ~ 1/8 for measurement samples
-      g_host_to_ghost += (sample - g_host_to_ghost) >> 3;
+      // Alpha-beta tracker: offset follows the residual at 1/8, rate at 1/32.
+      double dt    = (double)(host_mid - g_ghost_h0);
+      double pred  = (double)g_host_to_ghost + dt * g_ghost_rate;
+      double resid = (double)sample - pred;
+      if (resid > 50000.0 || resid < -50000.0) {
+        // >50 ms: the peer clock re-based; snap the offset, keep the rate
+        g_host_to_ghost = sample;
+        g_force_snap    = true;
+      } else {
+        g_host_to_ghost = (int64_t)(pred + resid * (1.0 / 8.0));
+        if (dt > 100000.0) {
+          g_ghost_rate += resid / dt * (1.0 / 32.0);
+          if (g_ghost_rate >  0.02) g_ghost_rate =  0.02;
+          if (g_ghost_rate < -0.02) g_ghost_rate = -0.02;
+        }
+      }
+      g_ghost_h0 = host_mid;
+      schedulerSetPeriod();
     }
   }
 }
@@ -878,7 +924,9 @@ void loop() {
     if (g_ghost_valid) {
       Serial.print(" ghost=");
       Serial.print((long)(g_host_to_ghost / 1000));
-      Serial.print("ms");
+      Serial.print("ms rate=");
+      Serial.print((long)(g_ghost_rate * 1e6));
+      Serial.print("ppm");
     }
     Serial.print(" ppqn=");
     Serial.println(g_ppqn);
