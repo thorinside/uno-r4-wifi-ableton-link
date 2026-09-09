@@ -7,11 +7,13 @@
   PPQN is fixed at 48 (PPQN_FIXED); set PPQN_POT to 1 to select it with a pot on A0.
   Advertises presence (peer count) but never sends timeline data.
 
-  Clock pulses are derived directly from the Link timeline each loop
-  iteration — no free-running timer, no phase correction needed.
+  Clock pulses are fired from a hardware timer interrupt (a 20 kHz scheduler
+  tick), so their timing does not depend on loop() speed. Each loop pass
+  derives the phase from the Link timeline and nudges the scheduler toward it.
 */
 
 #include <WiFiS3.h>
+#include "FspTimer.h"
 #include <WiFiUdp.h>
 #include "Arduino_LED_Matrix.h"
 
@@ -70,10 +72,10 @@ bool     g_is_playing        = false;
 uint8_t  g_session_id[8]     = {0};
 bool     g_session_valid     = false;
 
-// Clock output — derived each loop from timeline
-int  g_last_qpos       = -1;
+// Clock output — beat events reported by the scheduler
 int  g_beat_in_quantum = 0;
 bool g_beat_flag       = false;
+bool g_force_snap      = false;  // timeline re-anchored: snap phase, don't slew
 int64_t g_dbg_total_beats = 0;  // for beat-1 diagnosis
 
 // Display
@@ -93,9 +95,6 @@ int      g_displayed_progress = -1;
 // Presence broadcast
 unsigned long g_last_broadcast_ms = 0;
 
-// Pulse tracking (loop sets HIGH on tick, LOW after pulse width)
-unsigned long g_pulse_start_us = 0;
-bool          g_pulse_active   = false;
 unsigned long g_pulse_width_us = 2000;  // 2ms default
 
 // Measurement (host-to-ghost clock offset via ping/pong)
@@ -157,19 +156,92 @@ void drawDigit(int digit, int col0, int row0) {
   }
 }
 
-// ─── Pulse Width ────────────────────────────────────────
+// ─── Pulse Scheduler ────────────────────────────────────
+//
+// A GPT/AGT timer ticks at SCHED_HZ. The ISR keeps a tick counter, raises
+// CLOCK_PIN when the tick passes the scheduled next-pulse time, and lowers it
+// after the pulse width. Times are Q16 fixed-point ticks so a fractional
+// period (10.4167 ms at 120 BPM / 48 PPQN) accumulates without drift. The
+// loop owns tempo (period), PPQN (quantum length) and phase (nudging
+// s_next_pulse_q toward the Link timeline).
 
+#define SCHED_HZ         20000UL
+#define SCHED_TICK_US    (1000000UL / SCHED_HZ)
+#define SNAP_US          3000      // phase error above this snaps instead of slewing
+
+static FspTimer          s_sched;
+static volatile uint32_t s_tick         = 0;
+static volatile int64_t  s_next_pulse_q = 0;      // Q16 ticks
+static volatile int64_t  s_period_q     = 0;      // Q16 ticks per pulse
+static volatile uint32_t s_width_ticks  = 40;
+static volatile uint32_t s_pulse_start  = 0;
+static volatile bool     s_pulse_on     = false;
+static volatile int      s_qlen         = 4 * 48;  // pulses per quantum
+static volatile int      s_next_idx     = 0;      // index the next pulse will carry
+static volatile int      s_pulse_idx    = 0;      // index of the last pulse fired
+static volatile uint32_t s_pulse_count  = 0;
+
+static inline int64_t us_to_q(int64_t us) {
+  return (us * (int64_t)SCHED_HZ * 65536LL) / 1000000LL;
+}
+static inline int64_t q_to_us(int64_t q) {
+  return (q * 1000000LL / (int64_t)SCHED_HZ) >> 16;
+}
+
+static void sched_isr(timer_callback_args_t*) {
+  uint32_t t = ++s_tick;
+  if (s_pulse_on && (t - s_pulse_start) >= s_width_ticks) {
+    digitalWrite(CLOCK_PIN, LOW);
+    s_pulse_on = false;
+  }
+  int64_t tq = (int64_t)t << 16;
+  if (tq - s_next_pulse_q >= 0) {
+    digitalWrite(CLOCK_PIN, HIGH);
+    s_pulse_on    = true;
+    s_pulse_start = t;
+    s_pulse_idx   = s_next_idx;
+    s_next_idx    = (s_next_idx + 1) % s_qlen;
+    s_pulse_count++;
+    s_next_pulse_q += s_period_q;
+    if (tq - s_next_pulse_q >= 0)          // fell far behind: don't burst
+      s_next_pulse_q = tq + s_period_q;
+  }
+}
+
+void schedulerBegin() {
+  uint8_t type;
+  int8_t ch = FspTimer::get_available_timer(type);
+  if (ch < 0) ch = FspTimer::get_available_timer(type, true);
+  s_next_pulse_q = us_to_q(1000);
+  s_sched.begin(TIMER_MODE_PERIODIC, type, (uint8_t)ch, (float)SCHED_HZ, 50.0f, sched_isr);
+  s_sched.setup_overflow_irq();
+  s_sched.open();
+  s_sched.start();
+}
+
+// Push tempo, PPQN and pulse width into the scheduler.
 void updatePulseWidth() {
   float freq_hz = (g_bpm / 60.0f) * g_ppqn;
   float max_pulse_us = 400000.0f / freq_hz;  // 40% duty cap
   g_pulse_width_us = (max_pulse_us < 2000.0f) ? (unsigned long)max_pulse_us : 2000UL;
+
+  int64_t  period_q = us_to_q(g_tempo_us / g_ppqn);
+  uint32_t width    = g_pulse_width_us / SCHED_TICK_US;
+  int      qlen     = 4 * g_ppqn;
+  noInterrupts();
+  s_period_q    = period_q;
+  s_width_ticks = width ? width : 1;
+  s_qlen        = qlen;
+  s_next_idx   %= qlen;
+  interrupts();
 }
 
 // ─── Timeline → Pulse Position ──────────────────────────
 
-// Computes the current quantum position (0..4*ppqn-1) directly from
-// the Link timeline, or from local time if not yet calibrated.
-int computeCurrentQPos() {
+// Current position within the 4-beat quantum, in micro-pulses
+// (0 .. 4*ppqn*1e6 - 1), from the Link timeline, or from local time if not
+// yet calibrated.
+int64_t computeTimelinePhase() {
   int ppqn = g_ppqn;
   int64_t tempo = g_tempo_us;
   int64_t elapsed;
@@ -213,11 +285,47 @@ int computeCurrentQPos() {
   int64_t phase_ub = beat_ub % quantum_ub;
   if (phase_ub < 0) phase_ub += quantum_ub;
 
-  int biq = (int)(phase_ub / 1000000LL);
-  int64_t beat_frac_ub = phase_ub % 1000000LL;
-  int pulse = (int)(beat_frac_ub * ppqn / 1000000LL);
+  return phase_ub * ppqn;
+}
 
-  return biq * ppqn + pulse;
+// Steer the scheduler onto the timeline. Compares when the scheduler will
+// fire next with when the timeline says the next pulse is due, wraps the
+// error to +/- half a period, and either snaps (large error, or a re-anchor)
+// or slews a fraction of it per call so measurement jitter does not reach
+// the output. Also hands the scheduler the quantum index of that pulse.
+void syncScheduler() {
+  int     ppqn     = g_ppqn;
+  int     qlen     = 4 * ppqn;
+  int64_t phase_p  = computeTimelinePhase();
+  int64_t period_us = g_tempo_us / ppqn;
+  int     tl_idx   = (int)(phase_p / 1000000LL);                 // pulse we are in
+  int64_t frac_p   = phase_p % 1000000LL;
+  int64_t tl_next_us = (1000000LL - frac_p) * g_tempo_us / (1000000LL * ppqn);
+
+  noInterrupts();
+  uint32_t t   = s_tick;
+  int64_t  nxt = s_next_pulse_q;
+  interrupts();
+  int64_t sched_next_us = q_to_us(nxt - ((int64_t)t << 16));
+
+  int64_t err = sched_next_us - tl_next_us;   // > 0: scheduler will fire late
+  int     k   = 1;                            // timeline index of scheduler's next pulse
+  while (err >  period_us / 2) { err -= period_us; k++; }
+  while (err < -period_us / 2) { err += period_us; k--; }
+  int idx = ((tl_idx + k) % qlen + qlen) % qlen;
+
+  int64_t step;
+  if (g_force_snap || err > SNAP_US || err < -SNAP_US) {
+    step = err;
+    g_force_snap = false;
+  } else {
+    step = err / 8;
+  }
+
+  noInterrupts();
+  s_next_pulse_q -= us_to_q(step);
+  s_next_idx      = idx;
+  interrupts();
 }
 
 // ─── Byte-Order Utilities ───────────────────────────────
@@ -327,7 +435,7 @@ void parseLinkPacket(const uint8_t* buf, int len) {
             // Drift tracking: EMA with alpha ~ 1/16
             g_clock_offset += error >> 4;
           }
-          g_last_qpos = -1;  // reset pulse tracker on any recalibration
+          g_force_snap = true;  // re-anchored: snap the scheduler phase
         }
         g_last_time_origin = new_time_origin;
 
@@ -515,7 +623,7 @@ void handleMeasurementPong(const uint8_t* buf, int len) {
     if (!g_ghost_valid) {
       g_host_to_ghost = sample;
       g_ghost_valid = true;
-      g_last_qpos = -1;  // re-derive pulse position from measurement
+      g_force_snap = true;  // re-derive pulse phase from measurement
       Serial.print("GHOST: initial off=");
       Serial.print((long)(sample / 1000));
       Serial.println("ms");
@@ -541,6 +649,7 @@ void setup() {
   memset(g_frame, 0, sizeof(g_frame));
 
   updatePulseWidth();
+  schedulerBegin();
 
   drawBPM((int)DEFAULT_BPM);
   renderIfDirty();
@@ -563,34 +672,24 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // ── 0. Pulse end ──
-  if (g_pulse_active && (micros() - g_pulse_start_us >= g_pulse_width_us)) {
-    digitalWrite(CLOCK_PIN, LOW);
-    g_pulse_active = false;
-  }
+  // ── 1. Steer the pulse scheduler onto the timeline, pick up beat events ──
+  syncScheduler();
 
-  // ── 1. Compute pulse position and fire on boundary ──
-  int qpos = computeCurrentQPos();
-  if (qpos != g_last_qpos) {
-    digitalWrite(CLOCK_PIN, HIGH);
-    g_pulse_start_us = micros();
-    g_pulse_active = true;
+  noInterrupts();
+  uint32_t pulse_count = s_pulse_count;
+  int      qpos        = s_pulse_idx;
+  interrupts();
 
-    int ppqn = g_ppqn;
-    int curr_beat = qpos / ppqn;
-    if (g_last_qpos < 0 || curr_beat != g_last_qpos / ppqn) {
+  static uint32_t s_seen_count = 0;
+  static int      s_last_biq   = -1;
+  if (pulse_count != s_seen_count) {
+    s_seen_count = pulse_count;
+    int curr_beat = qpos / g_ppqn;
+    if (curr_beat != s_last_biq) {
+      s_last_biq        = curr_beat;
       g_beat_in_quantum = curr_beat;
-      g_beat_flag = true;
-      Serial.print("BEAT: biq=");
-      Serial.print(curr_beat);
-      Serial.print(" tb=");
-      Serial.print((long)g_dbg_total_beats);
-      Serial.print(" BO=");
-      Serial.print((long)(g_tl_beat_origin / 1000));
-      Serial.print(" qpos=");
-      Serial.println(qpos);
+      g_beat_flag       = true;
     }
-    g_last_qpos = qpos;
   }
 
   // ── 2. Link timeout ──
@@ -656,11 +755,9 @@ void loop() {
     }
     if (s_ppqn_confirm >= 3 && idx != g_ppqn_index) {
       g_ppqn_index = idx;
-      digitalWrite(CLOCK_PIN, LOW);
-      g_pulse_active = false;
       g_ppqn = PPQN_OPTIONS[idx];
-      g_last_qpos = -1;
       updatePulseWidth();
+      g_force_snap = true;
       g_displayed_bpm = -1;
       Serial.print("PPQN: ");
       Serial.println(g_ppqn);
