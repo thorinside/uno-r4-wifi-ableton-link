@@ -26,10 +26,10 @@ Firmware that turns an Arduino UNO R4 WiFi into a 48 PPQN Eurorack clock generat
 ## Setup
 
 1. Install [arduino-cli](https://arduino.github.io/arduino-cli/) and the `arduino:renesas_uno` core
-2. Edit `link_clock/link_clock.ino` and set your WiFi credentials:
+2. Copy `link_clock/arduino_secrets.h.example` to `link_clock/arduino_secrets.h` and set your WiFi credentials (the file is gitignored):
    ```c
-   const char* WIFI_SSID = "YOUR_SSID";
-   const char* WIFI_PASS = "YOUR_PASSWORD";
+   #define SECRET_SSID "YOUR_SSID"
+   #define SECRET_PASS "YOUR_PASSWORD"
    ```
 3. Build and upload:
    ```bash

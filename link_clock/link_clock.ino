@@ -17,8 +17,11 @@
 
 // ─── Configuration ──────────────────────────────────────
 
-const char* WIFI_SSID = "YOUR_SSID";
-const char* WIFI_PASS = "YOUR_PASSWORD";
+// WiFi credentials live in arduino_secrets.h (gitignored); copy
+// arduino_secrets.h.example and fill it in.
+#include "arduino_secrets.h"
+const char* WIFI_SSID = SECRET_SSID;
+const char* WIFI_PASS = SECRET_PASS;
 
 #define CLOCK_PIN        2
 #define RUN_PIN          4

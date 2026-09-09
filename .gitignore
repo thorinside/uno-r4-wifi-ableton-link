@@ -9,3 +9,6 @@ build/
 
 # OS
 .DS_Store
+
+# WiFi credentials
+link_clock/arduino_secrets.h
