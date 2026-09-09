@@ -16,12 +16,13 @@ a 48 PPQN Eurorack clock on D2.
 - **Pulse scheduler** — one FspTimer ticks at 20 kHz; its ISR raises D2 when the tick passes the
   scheduled next-pulse time (Q16 fixed-point ticks, so fractional periods don't drift) and lowers
   it after the pulse width. Never generate pulses from loop(): WiFiS3 calls block for ms at a time.
-- **Ghost clock model** — the ping/pong measurement feeds an alpha-beta tracker (offset 1/8,
-  rate 1/32). The rate term is the RA4M1 internal-oscillator error vs Live's clock (no crystal on
-  the MCU) and scales the scheduler period, so the clock is frequency-locked, not just phase-nudged
+- **Ghost clock model** — pings every 100 ms; per 2 s window only the shortest-round-trip pong is
+  used (modem jitter is ~15 ms, min-RTT is stable at ~33 ms). Offset tracks those at 1/2; rate is
+  the slope between filtered samples ≥10 s apart (this board's oscillator: ~+1330 ppm, no MCU
+  crystal). The rate scales the scheduler period so the clock is frequency-locked, not just nudged
 - **Phase alignment** — each loop pass derives the timeline phase from the Link tmln + ghost model
-  and nudges the scheduler: slews 1/8 of the error per pass, capped at 20 µs (bounds tempo
-  deviation to ~0.2%), snaps when the error exceeds 3 ms or the timeline re-anchors (`g_force_snap`)
+  and nudges the scheduler: 1/4 of the error, rate-limited to 1500 ppm of wall time (tempo
+  deviation ≤0.15% while correcting), snaps when the error exceeds 3 ms or the timeline re-anchors
 - **2 ms pulse width**, capped at 40% duty for high PPQN × BPM
 - **BPM display** on LED matrix (rows 1–5, 3-digit 3×5 font at cols 0, 4, 8)
 - **Beat flash** — 50ms full-white matrix flash when pulse_counter rolls to 0 (beat boundary)

@@ -110,6 +110,22 @@ int64_t       g_host_to_ghost   = 0;  // offset at host time g_ghost_h0 (microse
 int64_t       g_ghost_h0        = 0;
 double        g_ghost_rate      = 0.0;  // d(ghost)/d(host) - 1
 bool          g_ghost_valid     = false;
+// Pongs on the R4's WiFi modem jitter by ~15 ms. Per window, keep only the
+// sample with the shortest round trip (Link does the same), and derive the
+// rate from filtered samples spaced RATE_BASELINE_US apart.
+#define PING_MS            100
+#define MEAS_WINDOW_US     2000000LL
+#define RATE_BASELINE_US   10000000LL
+#define RATE_RING          16
+int64_t       g_win_start_h     = 0;
+int64_t       g_win_best_rtt    = -1;
+int64_t       g_win_best_sample = 0;
+int64_t       g_win_best_h      = 0;
+int64_t       g_rate_h[RATE_RING];      // filtered (host time, offset) history
+int64_t       g_rate_off[RATE_RING];
+int           g_rate_n          = 0;    // entries stored (<= RATE_RING), newest at g_rate_n-1
+int64_t       g_dbg_rtt         = 0;
+int64_t       g_dbg_resid       = 0;
 int64_t       g_ping_host_time  = 0;  // host time when last ping sent
 unsigned long g_last_ping_ms    = 0;
 int64_t       g_prev_ghost_time = 0;  // __gt from last pong, sent as _pgt
@@ -174,7 +190,8 @@ void drawDigit(int digit, int col0, int row0) {
 #define SCHED_HZ         20000UL
 #define SCHED_TICK_US    (1000000UL / SCHED_HZ)
 #define SNAP_US          3000      // phase error above this snaps instead of slewing
-#define SLEW_MAX_US      20        // per loop pass; bounds tempo deviation while slewing
+#define SLEW_MAX_PPM     1500      // phase slew rate limit: bounds tempo deviation to 0.15%
+#define SLEW_MIN_US      2         // floor so tiny errors still close
 
 static FspTimer          s_sched;
 static volatile uint32_t s_tick         = 0;
@@ -341,14 +358,23 @@ void syncScheduler() {
   while (err < -period_us / 2) { err += period_us; k--; }
   int idx = ((tl_idx + k) % qlen + qlen) % qlen;
 
+  // Slew is rate-limited by wall time, not per pass, so a correction reads as
+  // a bounded tempo deviation (<= SLEW_MAX_PPM) however fast the loop runs.
+  static int64_t s_last_sync_us = 0;
+  int64_t now_us  = (int64_t)micros64();
+  int64_t elapsed = (s_last_sync_us > 0) ? now_us - s_last_sync_us : 0;
+  s_last_sync_us  = now_us;
+  int64_t cap = elapsed * SLEW_MAX_PPM / 1000000LL;
+  if (cap < SLEW_MIN_US) cap = SLEW_MIN_US;
+
   int64_t step;
   if (g_force_snap || err > SNAP_US || err < -SNAP_US) {
     step = err;
     g_force_snap = false;
   } else {
-    step = err / 8;
-    if (step >  SLEW_MAX_US) step =  SLEW_MAX_US;
-    if (step < -SLEW_MAX_US) step = -SLEW_MAX_US;
+    step = err / 4;
+    if (step >  cap) step =  cap;
+    if (step < -cap) step = -cap;
   }
 
   noInterrupts();
@@ -648,35 +674,77 @@ void handleMeasurementPong(const uint8_t* buf, int len) {
     // NTP-style: offset = ghost_at_peer_receive - midpoint(our_send, our_recv)
     int64_t host_mid = echoed_host_time / 2 + local_recv / 2;
     int64_t sample = ghost_time - host_mid;
+    int64_t rtt    = local_recv - echoed_host_time;
 
     if (!g_ghost_valid) {
+      // First contact: use it as-is so the clock locks immediately
       g_host_to_ghost = sample;
       g_ghost_h0      = host_mid;   // keep any learned rate: it is our oscillator's, not the peer's
       g_ghost_valid   = true;
-      g_force_snap    = true;  // re-derive pulse phase from measurement
+      g_force_snap    = true;
+      g_win_start_h   = host_mid;
+      g_win_best_rtt  = -1;
+      g_rate_n        = 0;
       Serial.print("GHOST: initial off=");
       Serial.print((long)(sample / 1000));
+      Serial.print("ms rtt=");
+      Serial.print((long)(rtt / 1000));
       Serial.println("ms");
-    } else {
-      // Alpha-beta tracker: offset follows the residual at 1/8, rate at 1/32.
-      double dt    = (double)(host_mid - g_ghost_h0);
-      double pred  = (double)g_host_to_ghost + dt * g_ghost_rate;
-      double resid = (double)sample - pred;
-      if (resid > 50000.0 || resid < -50000.0) {
-        // >50 ms: the peer clock re-based; snap the offset, keep the rate
-        g_host_to_ghost = sample;
-        g_force_snap    = true;
-      } else {
-        g_host_to_ghost = (int64_t)(pred + resid * (1.0 / 8.0));
-        if (dt > 100000.0) {
-          g_ghost_rate += resid / dt * (1.0 / 32.0);
-          if (g_ghost_rate >  0.02) g_ghost_rate =  0.02;
-          if (g_ghost_rate < -0.02) g_ghost_rate = -0.02;
-        }
-      }
-      g_ghost_h0 = host_mid;
-      schedulerSetPeriod();
+      return;
     }
+
+    // Collect the shortest-round-trip sample of this window
+    if (g_win_best_rtt < 0 || rtt < g_win_best_rtt) {
+      g_win_best_rtt    = rtt;
+      g_win_best_sample = sample;
+      g_win_best_h      = host_mid;
+    }
+    if (host_mid - g_win_start_h < MEAS_WINDOW_US) return;
+
+    applyMeasurement(g_win_best_h, g_win_best_sample, g_win_best_rtt);
+    g_win_start_h  = host_mid;
+    g_win_best_rtt = -1;
+  }
+}
+
+// One filtered (min-RTT) offset sample per window: track the offset, and
+// derive the oscillator rate from samples >= RATE_BASELINE_US apart.
+void applyMeasurement(int64_t h, int64_t sample, int64_t rtt) {
+  g_dbg_rtt = rtt;
+  double dt    = (double)(h - g_ghost_h0);
+  double pred  = (double)g_host_to_ghost + dt * g_ghost_rate;
+  double resid = (double)sample - pred;
+  g_dbg_resid  = (int64_t)resid;
+
+  if (resid > 50000.0 || resid < -50000.0) {
+    // >50 ms: the peer clock re-based; snap the offset, keep the rate
+    g_host_to_ghost = sample;
+    g_ghost_h0      = h;
+    g_force_snap    = true;
+    g_rate_n        = 0;
+    return;
+  }
+
+  g_host_to_ghost = (int64_t)(pred + resid * 0.5);
+  g_ghost_h0      = h;
+
+  // Rate: slope between this sample and the oldest one within the ring
+  if (g_rate_n == RATE_RING) {
+    memmove(g_rate_h,   g_rate_h + 1,   sizeof(int64_t) * (RATE_RING - 1));
+    memmove(g_rate_off, g_rate_off + 1, sizeof(int64_t) * (RATE_RING - 1));
+    g_rate_n--;
+  }
+  g_rate_h[g_rate_n]   = h;
+  g_rate_off[g_rate_n] = sample;
+  g_rate_n++;
+
+  int64_t span = h - g_rate_h[0];
+  if (span >= RATE_BASELINE_US) {
+    double r = (double)(sample - g_rate_off[0]) / (double)span;
+    if (r >  0.02) r =  0.02;
+    if (r < -0.02) r = -0.02;
+    g_ghost_rate += (r - g_ghost_rate) * 0.5;
+    schedulerSetPeriod();
   }
 }
 
@@ -825,7 +893,7 @@ void loop() {
   }
 
   // ── 7. Measurement ping/pong ──
-  if (g_mep_valid && now - g_last_ping_ms >= 250) {
+  if (g_mep_valid && now - g_last_ping_ms >= PING_MS) {
     g_last_ping_ms = now;
     sendMeasurementPing();
   }
@@ -926,7 +994,11 @@ void loop() {
       Serial.print((long)(g_host_to_ghost / 1000));
       Serial.print("ms rate=");
       Serial.print((long)(g_ghost_rate * 1e6));
-      Serial.print("ppm");
+      Serial.print("ppm rtt=");
+      Serial.print((long)(g_dbg_rtt / 1000));
+      Serial.print("ms resid=");
+      Serial.print((long)(g_dbg_resid / 1000));
+      Serial.print("ms");
     }
     Serial.print(" ppqn=");
     Serial.println(g_ppqn);
